@@ -60,7 +60,46 @@ diagnose.
 - **Read-only telemetry API** — `GET /api/ssh-guard` and `GET /healthz`.
   Binds to loopback by default; bind it to a private interface only if an
   internal dashboard polls it. Never expose it publicly.
-- One broken container can't kill the scan loop; state survives restarts.
+- **Containers are scanned in parallel with short host-side timeouts** — one
+  hung or hostile container slows a single scan, it cannot stall the guard.
+- **`/healthz` is honest** — it returns `ok: false` when the last scan is
+  stale, so a wedge is visible instead of silently green.
+- State survives restarts (atomic writes, no partial files).
+
+## Security model (read this before running it)
+
+The guard `docker exec`es into containers that may be fully
+renter-controlled. Take these seriously:
+
+- **docker-group access is equivalent to root on the host.** The daemon runs
+  as a non-root user, but that user's docker socket is effectively host root.
+  Use a dedicated account; don't hand the group out casually.
+- **`docker exec -u 0:0 <container> sh -c …` runs the container's own `sh`.**
+  On runc versions before **1.1.12** that is a known container-escape trigger
+  when the host execs into a hostile container (CVE-2019-5736; CVE-2024-21626
+  "attack 3b"). **Run this guard only on runc ≥ 1.1.12** (check `runc
+  --version`) and keep the runtime patched.
+- **Everything an exec prints is renter-controlled and treated as hostile.**
+  Output is capped on the host (64 KB per exec — a container spewing
+  megabytes cannot balloon the daemon's memory or its state file), parsed
+  strictly (mode strings must match `^[0-7]{3,4}$`, users `[A-Za-z0-9_.-]{1,
+  32}`, paths matched exactly), and error text is truncated to 400 chars
+  before it reaches state or the API. Repair "verification" always re-stats;
+  only observed-clean results are recorded as fixed.
+- **The API has no auth.** The code default is loopback (`SSH_GUARD_HOST`
+  defaults to `127.0.0.1` — the same value the unit sets), stalled
+  connections are cut after 10 s, and it leaks only container names/images/
+  repair history. Still: private interface or loopback, never 0.0.0.0.
+- **State is written safely** — state dir is created `0700`, files are
+  written via `mkstemp` inside that dir and atomically renamed (no `.tmp`
+  symlink games by other local users).
+- **Do not "optimize" the execs away by fixing perms from the host through
+  the overlay's merged directory** — symlinks there can reach host files.
+  Doing the work inside the container (as this tool does) is the safe path.
+- Alternative design: trigger repairs from `docker events` container-start
+  events with a few early retries instead of polling forever. We chose
+  polling for simplicity (entrypoints can also break perms minutes into a
+  session); both are defensible.
 
 ## Install
 
