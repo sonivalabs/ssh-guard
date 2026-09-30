@@ -1,0 +1,20 @@
+[Unit]
+Description=SSH Guard (auto-repair container authorized_keys perms)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+# Copy ssh_guard.py to the host user's home; that user needs docker access
+# (docker group is enough — the guard never needs root on the host).
+ExecStart=/usr/bin/python3 %h/ssh_guard.py
+Environment=SSH_GUARD_PORT=8087
+# Bind the telemetry API to loopback by default. If a remote poller or
+# dashboard needs to reach it, bind to a private/tailscale interface IP.
+# NEVER bind to 0.0.0.0 on a host with untrusted network users.
+Environment=SSH_GUARD_HOST=127.0.0.1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
